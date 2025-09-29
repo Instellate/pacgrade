@@ -17,10 +17,12 @@
 #include <unordered_map>
 #include <vector>
 #include <filesystem>
+#include <ranges>
+#include <chrono>
 
 #include <alpm.h>
 #include <pwd.h>
-#include <ranges>
+#include <set>
 #include <curl/curl.h>
 #include <libnotify/notify.h>
 
@@ -29,6 +31,7 @@ extern "C" {
 }
 
 namespace fs = std::filesystem;
+namespace chrono = std::chrono;
 
 alpm_pkg_t *getSyncPkg(alpm_handle_t *handle, const char *name) {
     const alpm_list_t *list = alpm_get_syncdbs(handle);
@@ -74,7 +77,7 @@ int main() {
     }
 
     fs::path userDir{pwuid->pw_dir};
-    fs::path configDir = userDir / ".cache/packard";
+    fs::path configDir = userDir / ".cache/pacgrade";
     std::cout << "Configuration directory is: " << configDir << '\n';
 
     if (!fs::exists(configDir)) {
@@ -119,6 +122,33 @@ int main() {
             server += "/";
         }
         server += repo + ".db";
+
+        curl_easy_setopt(curl, CURLOPT_URL, server.c_str());
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "HEAD");
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, CURLFOLLOW_ALL);
+
+        curl_easy_perform(curl);
+
+        curl_header *lastModifiedHeader = nullptr;
+        curl_easy_header(curl, "last-modified", 0, CURLH_HEADER, -1, &lastModifiedHeader);
+
+        tm time{};
+        strptime(lastModifiedHeader->value, "%a, %d %b %Y %H:%M:%S GMT", &time);
+        time_t lastModifiedRemote = timegm(&time);
+
+        curl_easy_cleanup(curl);
+
+        if (fs::exists(repoDb)) {
+            auto lastWriteTime = chrono::clock_cast<chrono::system_clock>(fs::last_write_time(repoDb));
+            auto lastWriteLocal = chrono::duration_cast<chrono::seconds>(lastWriteTime.time_since_epoch()).count();
+
+            if (lastModifiedRemote < lastWriteLocal) {
+                std::cout << "Repository database " << repo << " is up to date, skipping.\n";
+                continue;
+            }
+        }
+
+        curl = curl_easy_init();
 
         FILE *db = fopen(repoDb.c_str(), "w+");
 
@@ -199,17 +229,20 @@ int main() {
 
     notify_init("Pacgrade");
 
-    std::stringstream ss;
     if (amount > 0) {
-        ss << "Found " << amount << " packages that are out of date.\nRemember to upgrade!";
-    } else {
-        ss << "Found a package that is out of date.\nRemember to upgrade!";
+        std::stringstream ss;
+        if (amount > 1) {
+            ss << "Found " << amount << " packages that are out of date.\nRemember to upgrade!";
+        } else {
+            ss << "Found a package that is out of date.\nRemember to upgrade!";
+        }
+
+        std::string description = ss.str();
+
+        NotifyNotification *notification =
+                notify_notification_new("Packages out of date", description.c_str(), nullptr);
+        notify_notification_show(notification, nullptr);
     }
-
-    std::string description = ss.str();
-
-    NotifyNotification *notification = notify_notification_new("Packages out of date", description.c_str(), nullptr);
-    notify_notification_show(notification, nullptr);
 
     alpm_release(handle);
     pu_config_free(config);
