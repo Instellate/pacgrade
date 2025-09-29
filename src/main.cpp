@@ -208,7 +208,7 @@ int main() {
 
     std::string description = ss.str();
 
-    NotifyNotification *notification = notify_notification_new("Packages out ouf date", description.c_str(), nullptr);
+    NotifyNotification *notification = notify_notification_new("Packages out of date", description.c_str(), nullptr);
     notify_notification_show(notification, nullptr);
 
     alpm_release(handle);
