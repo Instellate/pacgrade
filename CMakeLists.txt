@@ -11,11 +11,22 @@ pkg_check_modules(libnotify REQUIRED libnotify)
 
 find_library(PACUTILS pacutils REQUIRED)
 find_package(CURL COMPONENTS HTTP HTTPS REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 add_executable(pacgrade
         src/main.cpp
         src/ALPMList.h)
-target_link_libraries(pacgrade PRIVATE ${libalpm_LIBRARIES} ${PACUTILS} ${CURL_LIBRARIES} ${libnotify_LIBRARIES})
-target_include_directories(pacgrade PRIVATE ${CURL_INCLUDE_DIRS} ${libalpm_INCLUDE_DIRS} ${libnotify_INCLUDE_DIRS})
+target_link_libraries(pacgrade PRIVATE
+        ${libalpm_LIBRARIES}
+        ${PACUTILS}
+        ${CURL_LIBRARIES}
+        ${libnotify_LIBRARIES}
+        nlohmann_json::nlohmann_json)
+
+target_include_directories(pacgrade PRIVATE
+        ${CURL_INCLUDE_DIRS}
+        ${libalpm_INCLUDE_DIRS}
+        ${libnotify_INCLUDE_DIRS}
+        ${nlohmann_json_INCLUDE_DIRS})
 
 install(TARGETS pacgrade)

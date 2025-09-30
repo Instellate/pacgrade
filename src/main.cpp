@@ -20,19 +20,22 @@
 #include <ranges>
 #include <chrono>
 
+#include <nlohmann/json.hpp>
+
 #include <alpm.h>
 #include <pwd.h>
 #include <curl/curl.h>
 #include <libnotify/notify.h>
 
-#include "ALPMList.h"
-
 extern "C" {
 #include <pacutils.h>
 }
 
+#include "ALPMList.h"
+
 namespace fs = std::filesystem;
 namespace chrono = std::chrono;
+using nlohmann::json;
 
 alpm_pkg_t *getSyncPkg(alpm_handle_t *handle, const char *name) {
     const alpm_list_t *list = alpm_get_syncdbs(handle);
@@ -48,6 +51,12 @@ alpm_pkg_t *getSyncPkg(alpm_handle_t *handle, const char *name) {
     }
 
     return nullptr;
+}
+
+size_t curlStringWrite(char *ptr, size_t size, size_t nmemb, void *userData) {
+    auto stringPtr = static_cast<std::string *>(userData);
+    stringPtr->append(ptr, nmemb);
+    return nmemb;
 }
 
 int main() {
@@ -146,7 +155,6 @@ int main() {
         }
 
         curl = curl_easy_init();
-
         FILE *db = fopen(repoDb.c_str(), "w+");
 
         curl_easy_setopt(curl, CURLOPT_URL, server.c_str());
@@ -195,7 +203,7 @@ int main() {
     std::cout << "Looking for out of date packages\n";
     size_t amount = 0;
 
-    std::vector<std::string> probableAurPacakge;
+    std::unordered_map<std::string, alpm_pkg_t *> aurPackages;
     pacgrade::ALPMList<alpm_pkg_t *> pkgList{alpm_db_get_pkgcache(localDb)};
 
     for (alpm_pkg_t *pkg: pkgList) {
@@ -204,7 +212,7 @@ int main() {
         alpm_pkg_t *syncPkg = getSyncPkg(handle, pkgName);
         if (!syncPkg) {
             std::cerr << "Couldn't find sync database for package: " << pkgName << ", probable AUR package\n";
-            probableAurPacakge.emplace_back(pkgName);
+            aurPackages.emplace(std::string{pkgName}, pkg);
             continue;
         }
 
@@ -218,6 +226,58 @@ int main() {
             std::cout << "\tLocal version: " << localVersion << '\n';
             std::cout << "\tSync version: " << syncVersion << '\n';
             amount++;
+        }
+    }
+
+    if (!aurPackages.empty()) {
+        std::cout << "Looking for possible AUR packages\n";
+
+        CURLU *url = curl_url();
+        curl_url_set(url, CURLUPART_URL, "https://aur.archlinux.org/rpc/v5/info", 0);
+
+        for (const std::string &packageName: aurPackages | std::views::keys) {
+            std::string packageQuery = "arg[]=" + packageName;
+
+            curl_url_set(url, CURLUPART_QUERY, packageQuery.c_str(), CURLU_APPENDQUERY | CURLU_URLENCODE);
+        }
+
+        char *urlString = nullptr;
+        curl_url_get(url, CURLUPART_URL, &urlString, 0);
+
+        std::string body;
+
+        CURL *curl = curl_easy_init();
+        curl_easy_setopt(curl, CURLOPT_URL, urlString);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &curlStringWrite);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+
+        curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+        curl_free(urlString);
+        curl_url_cleanup(url);
+
+        json data = json::parse(body);
+        size_t resultCount = data["resultcount"].get<size_t>();
+        std::cout << "Found " << resultCount << " out of " << aurPackages.size() << " AUR packages\n";
+
+        for (auto aurPackage : data["results"]) {
+            const auto it = aurPackages.find(aurPackage["Name"]);
+            if (it == aurPackages.end()) {
+                std::cerr << "Couldn't find cached package for " << aurPackage["name"].get<std::string>() << '\n';
+                continue;
+            }
+
+            alpm_pkg_t *pkg = it->second;
+
+            size_t remoteLastModified = aurPackage["LastModified"];
+            alpm_time_t localBuildDate = alpm_pkg_get_builddate(pkg);
+
+            const char *localVersion = alpm_pkg_get_version(pkg);
+            std::string remoteVersion = aurPackage["Version"];
+
+            if (remoteLastModified > localBuildDate && remoteVersion != localVersion) {
+                ++amount;
+            }
         }
     }
 
