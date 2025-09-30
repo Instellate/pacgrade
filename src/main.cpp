@@ -22,9 +22,10 @@
 
 #include <alpm.h>
 #include <pwd.h>
-#include <set>
 #include <curl/curl.h>
 #include <libnotify/notify.h>
+
+#include "ALPMList.h"
 
 extern "C" {
 #include <pacutils.h>
@@ -55,19 +56,15 @@ int main() {
 
     std::unordered_map<std::string, std::vector<std::string> > repos;
 
-    alpm_list_t *repoList = config->repos;
-    while (repoList) {
-        const auto repo = static_cast<pu_repo_t *>(repoList->data);
-
+    pacgrade::ALPMList<pu_repo_t *> repoList{config->repos};
+    for (pu_repo_t *repo: repoList) {
         std::vector<std::string> servers;
-        alpm_list_t *serverList = repo->servers;
-        while (serverList) {
-            servers.emplace_back(static_cast<char *>(serverList->data));
-            serverList = alpm_list_next(serverList);
-        }
+        pacgrade::ALPMList<char *> serverList{repo->servers};
 
+        for (char *server: serverList) {
+            servers.emplace_back(server);
+        }
         repos.emplace(std::string{repo->name}, std::move(servers));
-        repoList = alpm_list_next(repoList);
     }
 
     passwd *pwuid = getpwuid(getuid());
@@ -198,15 +195,16 @@ int main() {
     std::cout << "Looking for out of date packages\n";
     size_t amount = 0;
 
-    alpm_list_t *pkgList = alpm_db_get_pkgcache(localDb);
-    while (pkgList) {
-        auto *pkg = static_cast<alpm_pkg_t *>(pkgList->data);
+    std::vector<std::string> probableAurPacakge;
+    pacgrade::ALPMList<alpm_pkg_t *> pkgList{alpm_db_get_pkgcache(localDb)};
+
+    for (alpm_pkg_t *pkg: pkgList) {
         auto pkgName = alpm_pkg_get_name(pkg);
 
         alpm_pkg_t *syncPkg = getSyncPkg(handle, pkgName);
         if (!syncPkg) {
-            std::cerr << "Couldn't find sync database for package: " << pkgName << '\n';
-            pkgList = alpm_list_next(pkgList);
+            std::cerr << "Couldn't find sync database for package: " << pkgName << ", probable AUR package\n";
+            probableAurPacakge.emplace_back(pkgName);
             continue;
         }
 
@@ -221,8 +219,6 @@ int main() {
             std::cout << "\tSync version: " << syncVersion << '\n';
             amount++;
         }
-
-        pkgList = alpm_list_next(pkgList);
     }
 
     std::cout << "Found " << amount << " packages that are out of date\n";
